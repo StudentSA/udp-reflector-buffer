@@ -38,7 +38,9 @@
 #include <netinet/udp.h>
 #include <vector>
 #include <string.h>
+#include <deque>
    
+
 using namespace std;
 
 struct UDP_Destination
@@ -72,6 +74,11 @@ static vector<Network_Device> network_devices;
 /* Data offset within raw ethernet frame */
 static const int DATA_OFFSET = sizeof(struct ether_header) + 
    sizeof(struct iphdr) + sizeof(struct udphdr);
+
+static deque<u_int16_t> q_id;
+static deque<int> q_packlength;
+static deque<u_char *> q_packet;
+static uint32_t deque_max = 10;
 
 void enumerate_devices()
 {
@@ -280,12 +287,12 @@ void print_usage()
 static void process_packet(u_char *x, const struct pcap_pkthdr *header,
         const u_char *packet)
 {
-    struct udphdr *udp_hdr = (struct udphdr *) (packet
-            + sizeof(struct ether_header) + sizeof(struct iphdr));
+    struct udphdr* udp_hdr = (struct udphdr*)(packet
+        + sizeof(struct ether_header) + sizeof(struct iphdr));
 
     bool ignore_packet = false;
     int bytes_sent;
-    
+
     /* Determine if the packet should be ignored */
     for (unsigned j = 0; j < ignore_ports.size(); j++)
     {
@@ -296,7 +303,7 @@ static void process_packet(u_char *x, const struct pcap_pkthdr *header,
             if (verbose_debug)
             {
                 printf("ignoring %i bytes from ignored port %i\n", header->len,
-                        ignore_ports[j]);
+                    ignore_ports[j]);
             }
             break;
         }
@@ -305,28 +312,87 @@ static void process_packet(u_char *x, const struct pcap_pkthdr *header,
     if (ignore_packet)
         return;
 
-    /* Send UDP packet to each destination point */
-    for (unsigned i = 0; i < destination_points.size(); i++)
-    {
-        bytes_sent = sendto(socket_desc, (const char *) packet + DATA_OFFSET,
-                header->len - DATA_OFFSET, 0,
-                (struct sockaddr *) &destination_points[i].dest_sock_addr,
+    struct iphdr* ip_hdr = (struct iphdr*)(packet + sizeof(struct ether_header));
+    u_int16_t id = ntohs(ip_hdr->id);
+
+    u_char* temp_packet = new u_char[header->len - DATA_OFFSET];
+    memcpy(temp_packet, packet + DATA_OFFSET, header->len - DATA_OFFSET);
+    bool reset = false;
+
+    if (q_id.size() == 0) {
+        q_id.push_back(id);
+        q_packlength.push_back(header->len - DATA_OFFSET);
+        q_packet.push_back(temp_packet);
+    }
+    else {
+        int nIdx = -1, nCount = q_id.size();
+        for (int i = 0; i < nCount; i++) {
+            if (id < q_id[i]) {
+                nIdx = i;
+                break;
+            }
+        }
+
+        if (nIdx == -1)
+            nIdx = nCount;
+
+        if (q_id[nCount - 1] - id > 32768) {
+            nIdx = nCount;
+            reset = true;
+        }
+
+        q_id.push_back(0);
+        q_packlength.push_back(0);
+        q_packet.push_back(NULL);
+
+        for (int i = nCount; i > nIdx; i--) {
+            q_id[i] = q_id[i - 1];
+            q_packlength[i] = q_packlength[i - 1];
+            q_packet[i] = q_packet[i - 1];
+        }
+
+        q_id[nIdx] = id;
+        q_packlength[nIdx] = header->len - DATA_OFFSET;
+        q_packet[nIdx] = temp_packet;
+    }
+
+    if (q_id.size() <= deque_max)
+        return;
+
+    do {
+        u_char* packet_front = q_packet.front();
+        int packet_len = q_packlength.front();
+
+        q_packet.pop_front();
+        q_packlength.pop_front();
+        q_id.pop_front();
+
+        /* Send UDP packet to each destination point */
+        for (unsigned i = 0; i < destination_points.size(); i++)
+        {
+            bytes_sent = sendto(socket_desc, (const char*)packet_front,
+                packet_len, 0,
+                (struct sockaddr*)&destination_points[i].dest_sock_addr,
                 sizeof(destination_points[i].dest_sock_addr));
 
-        if (verbose_debug)
-        {
-            printf("sent %i bytes to %s:%i\n", bytes_sent,
+            if (verbose_debug)
+            {
+                printf("sent %i bytes to %s:%i\n", bytes_sent,
                     destination_points[i].dest_addr,
                     destination_points[i].dest_port);
+            }
+
+            if (bytes_sent == -1)
+            {
+                printf("sendto() failed.  errno=%i\n", errno);
+                perror("sendto");
+                exit(1);
+            }
         }
 
-        if (bytes_sent == -1)
-        {
-            printf("sendto() failed.  errno=%i\n", errno);
-            perror("sendto");
-            exit(1);
-        }
+        delete[] packet_front;
     }
+    while (reset && q_id.size() > 1);
 }
 
 int main(int argc, char *argv[])
@@ -389,6 +455,12 @@ int main(int argc, char *argv[])
                         exit(1);
                     }
 
+                    if (network_devices.size() == 0)
+                    {
+                        fprintf(stderr, "Can't find network device");
+                        exit(1);
+                    }
+
                     char device_num[10];
                     memset(device_num, '\0', 10);
 
@@ -440,6 +512,11 @@ int main(int argc, char *argv[])
             case 'l':
                 list_network_devices();
                 exit(0);
+                break;
+
+            case 'p':
+                if (atoi(&argv[1][3]) > 0)
+                    deque_max = atoi(&argv[1][3]);
                 break;
 
             /* show this help message */

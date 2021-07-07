@@ -35,6 +35,7 @@ Program options
    -v, enable verbose debugging
    -l, list network devices
    -h, show this help message
+   -p, packet count to buffer
 
 Usage Examples
 --------------
@@ -54,6 +55,10 @@ Usage Examples
       udp_reflector -s pcap1:3000 -d 192.168.1.10:3100 -d 192.168.1.15:3200 \ 
          -b 50000 -i 25000 -i 25001
 
+      c) Buffer 30 packets for sequence correction.
+
+      udp_reflector -p 30 -s pcap0:2011 -d 192.168.1.10:4011
+
    2) Bidirectional - two way port forward example (full duplex matched pair).
 
       a) Reflect all UDP traffic on port 3000 from source pcap3 interface, to
@@ -67,4 +72,3 @@ Usage Examples
 
       udp_reflector -s pcap3:3000 -d 192.168.1.255:3200 -b 50001 -i 50002
       udp_reflector -s pcap5:3200 -d 192.168.1.255:3000 -b 50002 -i 50001
-
